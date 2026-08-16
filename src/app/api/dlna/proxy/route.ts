@@ -65,11 +65,25 @@ export async function GET(request: NextRequest) {
   const range = request.headers.get('range');
 
   try {
-    const upstream = await fetch(targetUrl, {
-      headers: sourceHeaders(target, range),
-      redirect: 'follow',
-      signal: AbortSignal.timeout(30_000),
-    });
+    let upstream = await fetchUpstream(targetUrl, range);
+    // 实际拉取的地址(HTML 播放页解析后会变化,m3u8 相对地址基于它解析)
+    let effectiveUrl: URL = targetUrl;
+
+    // 部分资源站(如飞飞 CMS)返回的是 HTML 播放页而非直链,
+    // 真实流地址内嵌在 JS 变量/JSON 里,解析后跟随一层
+    const contentType0 = upstream.headers.get('content-type') || '';
+    if (contentType0.includes('text/html')) {
+      const html = await upstream.text();
+      const resolved = parseEmbeddedStreamUrl(html, targetUrl.toString());
+      if (!resolved) {
+        return new Response('Upstream returned a player page without a stream URL', {
+          status: 502,
+        });
+      }
+      console.log(`[DLNA] proxy resolved embedded stream: ${resolved}`);
+      effectiveUrl = new URL(resolved);
+      upstream = await fetchUpstream(effectiveUrl, range);
+    }
 
     if (!upstream.ok && upstream.status !== 206) {
       return new Response(`Upstream error: ${upstream.status}`, { status: upstream.status });
@@ -79,12 +93,12 @@ export async function GET(request: NextRequest) {
     const isPlaylist =
       contentType.includes('mpegurl') ||
       contentType.includes('m3u') ||
-      targetUrl.pathname.toLowerCase().split('?')[0].endsWith('.m3u8');
+      effectiveUrl.pathname.toLowerCase().split('?')[0].endsWith('.m3u8');
 
     if (isPlaylist && upstream.body) {
       const text = await upstream.text();
       const origin = requestOrigin(request);
-      const lines = text.split('\n').map((line) => rewritePlaylistLine(line, targetUrl, origin));
+      const lines = text.split('\n').map((line) => rewritePlaylistLine(line, effectiveUrl, origin));
       return new Response(lines.join('\n'), {
         status: 200,
         headers: {
@@ -129,4 +143,51 @@ function rewritePlaylistLine(line: string, playlistUrl: URL, origin: string): st
   } catch {
     return line;
   }
+}
+
+async function fetchUpstream(target: URL, range?: string | null): Promise<Response> {
+  return fetch(target, {
+    headers: sourceHeaders(target.toString(), range),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(30_000),
+  });
+}
+
+/**
+ * 从 CMS 播放页 HTML 中解析真实流地址。
+ * 覆盖常见模式:
+ *   - 飞飞/苹果CMS 播放页: const url = "/20240613/xxx/index.m3u8?sign=..."
+ *   - player_aaaa = {"url":"https://...m3u8", ...}(苹果CMS V10 经典)
+ *   - 直接内嵌完整 m3u8/mp4 链接
+ * 只解析指向 .m3u8/.mp4 的候选,相对路径基于播放页 URL 解析。
+ */
+function parseEmbeddedStreamUrl(html: string, baseUrl: string): string | null {
+  const candidates: string[] = [];
+  const jsVar = html.match(/\burl\s*[:=]\s*["']([^"']+)["']/i);
+  if (jsVar) candidates.push(jsVar[1]);
+  const playerAaaa = html.match(/player_aaaa\s*=\s*(\{[\s\S]*?\})/);
+  if (playerAaaa) {
+    try {
+      const obj = JSON.parse(playerAaaa[1]) as { url?: string };
+      if (obj.url) candidates.push(obj.url);
+    } catch {
+      const inner = playerAaaa[1].match(/["']url["']\s*:\s*["']([^"']+)["']/);
+      if (inner) candidates.push(inner[1]);
+    }
+  }
+  const direct = html.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/);
+  if (direct) candidates.push(direct[0]);
+
+  for (const c of candidates) {
+    const value = c.trim();
+    if (!value) continue;
+    if (!/\.m3u8(\?|$)/i.test(value) && !/\.mp4(\?|$)/i.test(value)) continue;
+    if (value.startsWith('data:') || value.startsWith('blob:')) continue;
+    try {
+      return new URL(value, baseUrl).toString();
+    } catch {
+      // ignore invalid
+    }
+  }
+  return null;
 }
