@@ -80,6 +80,7 @@ import AIComments from '@/components/AIComments';
 import CorrectDialog from '@/components/CorrectDialog';
 import DanmakuFilterSettings from '@/components/DanmakuFilterSettings';
 import DetailPanel from '@/components/DetailPanel';
+import DlnaCastPanel from '@/components/DlnaCastPanel';
 import DoubanComments from '@/components/DoubanComments';
 import DownloadEpisodeSelector from '@/components/DownloadEpisodeSelector';
 import Drawer from '@/components/Drawer';
@@ -633,6 +634,8 @@ function PlayPageClient() {
   const [danmakuMatches, setDanmakuMatches] = useState<DanmakuAnime[]>([]);
   const [showDanmakuSourceSelector, setShowDanmakuSourceSelector] = useState(false);
   const [showDanmakuFilterSettings, setShowDanmakuFilterSettings] = useState(false);
+  // DLNA 投屏面板
+  const [showDlnaCastPanel, setShowDlnaCastPanel] = useState(false);
   const [currentSearchKeyword, setCurrentSearchKeyword] = useState<string>(''); // 当前搜索使用的关键词
   const [toast, setToast] = useState<ToastProps | null>(null);
   const [isTranscoding, setIsTranscoding] = useState(false);
@@ -7732,6 +7735,19 @@ function PlayPageClient() {
                 handleNextEpisode();
               },
             },
+            {
+              position: 'right',
+              index: 60,
+              html: '<i class="art-icon flex"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><line x1="2" x2="2.01" y1="20" y2="20"/></svg></i>',
+              tooltip: 'DLNA 投屏',
+              click: function () {
+                // 全屏时 Drawer 会被全屏层遮挡,先退出再打开面板
+                if (artPlayerRef.current?.fullscreen) {
+                  artPlayerRef.current.fullscreen = false;
+                }
+                setShowDlnaCastPanel(true);
+              },
+            },
             // iOS 设备上添加自定义全屏按钮（横屏和竖屏都显示）
             ...(isIOS ? [{
               position: 'right',
@@ -10844,6 +10860,20 @@ function PlayPageClient() {
         onDownload={handleDownloadEpisode}
         enableOfflineDownload={enableOfflineDownload}
         hasOfflinePermission={hasOfflinePermission}
+      />
+
+      {/* DLNA 投屏面板 */}
+      <DlnaCastPanel
+        isOpen={showDlnaCastPanel}
+        onClose={() => setShowDlnaCastPanel(false)}
+        currentUrl={videoUrl}
+        getTitle={() => {
+          const episodeTitle = detail?.episodes_titles?.[currentEpisodeIndex - 1] || `第${currentEpisodeIndex}集`;
+          return videoTitle ? `${videoTitle} ${episodeTitle}` : episodeTitle;
+        }}
+        onCastingStart={() => {
+          artPlayerRef.current?.pause();
+        }}
       />
 
       {/* 弹幕过滤设置对话框 */}
