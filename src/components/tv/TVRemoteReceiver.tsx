@@ -10,6 +10,7 @@ import {
 } from '@/lib/tv-remote-core';
 import type {
   TVRemoteKeyCommand,
+  TVRemotePlayMediaCommand,
   TVRemoteTextCommand,
 } from '@/lib/tv-remote-types';
 
@@ -146,6 +147,25 @@ export default function TVRemoteReceiver() {
     socket.on('tv-remote:text', (command: TVRemoteTextCommand) => {
       applyTVRemoteText(command);
     });
+    // 投屏:跳转到 /tv/play 播放指定影片(episodeIndex 0-based,与 index 参数一致)
+    socket.on('tv-remote:play-media', (command: TVRemotePlayMediaCommand) => {
+      if (!command?.source || !command?.id || !command?.title) return;
+      const params = new URLSearchParams({
+        source: command.source,
+        id: command.id,
+        title: command.title,
+      });
+      if (typeof command.episodeIndex === 'number' && command.episodeIndex >= 0) {
+        params.set('index', String(command.episodeIndex));
+      }
+      if (typeof command.positionSec === 'number' && command.positionSec > 1) {
+        params.set('t', String(Math.floor(command.positionSec)));
+      }
+      if (command.fileName) {
+        params.set('fileName', command.fileName);
+      }
+      window.location.href = `/tv/play?${params.toString()}`;
+    });
 
     const interval = window.setInterval(updateState, 10000);
     const onVisibilityChange = () => {
@@ -165,6 +185,7 @@ export default function TVRemoteReceiver() {
       socket.off('connect', register);
       socket.off('tv-remote:key');
       socket.off('tv-remote:text');
+      socket.off('tv-remote:play-media');
       receiverState.refCount = Math.max(0, receiverState.refCount - 1);
       if (receiverState.refCount === 0) {
         receiverState.disconnectTimer = window.setTimeout(() => {

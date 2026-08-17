@@ -10871,6 +10871,17 @@ function PlayPageClient() {
           const episodeTitle = detail?.episodes_titles?.[currentEpisodeIndex - 1] || `第${currentEpisodeIndex}集`;
           return videoTitle ? `${videoTitle} ${episodeTitle}` : episodeTitle;
         }}
+        getMediaInfo={() => {
+          if (!currentSource || !currentId || !videoTitle) return null;
+          return {
+            source: currentSource,
+            id: currentId,
+            title: videoTitle,
+            // /tv/play 的 index 为 0-based,播放页 currentEpisodeIndex 为 1-based
+            episodeIndex: Math.max(0, currentEpisodeIndex - 1),
+            positionSec: artPlayerRef.current?.currentTime || 0,
+          };
+        }}
         onCastingStart={() => {
           artPlayerRef.current?.pause();
         }}

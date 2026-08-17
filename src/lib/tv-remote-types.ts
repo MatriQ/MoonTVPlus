@@ -32,3 +32,13 @@ export interface TVRemoteTextCommand {
   mode: TVRemoteTextMode;
   text?: string;
 }
+
+/** 投屏到 TV 端:让电视播放指定影片(episodeIndex 为 0-based,与 /tv/play 的 index 一致) */
+export interface TVRemotePlayMediaCommand {
+  source: string;
+  id: string;
+  title: string;
+  episodeIndex?: number;
+  positionSec?: number;
+  fileName?: string;
+}

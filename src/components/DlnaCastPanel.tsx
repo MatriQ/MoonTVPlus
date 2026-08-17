@@ -18,14 +18,17 @@ import {
   formatSeconds,
   isHttpsPage,
   lanHitToDevice,
+  listTvDevices,
   loadManualDevices,
   normalizeManualDeviceInput,
+  playMediaOnTv,
   prepareCastUri,
   saveManualDevices,
   scanLanDevices,
   sendCommand,
   type DlnaDevice,
   type LanDeviceHit,
+  type TvRemoteDevice,
 } from '@/lib/dlna-client';
 
 export interface DlnaCastPanelProps {
@@ -34,6 +37,14 @@ export interface DlnaCastPanelProps {
   /** 播放页原始 videoUrl(直链或站内相对代理),变化时触发自动重投 */
   currentUrl: string;
   getTitle: () => string;
+  /** 当前播放信息(source/id/集数/进度),用于投屏到 MoonTV TV App;不可用时返回 null */
+  getMediaInfo?: () => {
+    source: string;
+    id: string;
+    title: string;
+    episodeIndex: number;
+    positionSec: number;
+  } | null;
   /** 投屏开始:本机播放器暂停 */
   onCastingStart?: () => void;
   /** 投屏结束 */
@@ -53,6 +64,7 @@ export default function DlnaCastPanel({
   onClose,
   currentUrl,
   getTitle,
+  getMediaInfo,
   onCastingStart,
   onCastingStop,
 }: DlnaCastPanelProps) {
@@ -75,6 +87,9 @@ export default function DlnaCastPanel({
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
   const [lanHits, setLanHits] = useState<LanDeviceHit[]>([]);
+  // MoonTV TV App(私有投屏,经服务器中转,云端部署同样可用)
+  const [tvDevices, setTvDevices] = useState<TvRemoteDevice[]>([]);
+  const [tvError, setTvError] = useState<string | null>(null);
 
   useEffect(() => {
     castingRef.current = casting;
@@ -105,6 +120,47 @@ export default function DlnaCastPanel({
       void runDiscover();
     }
   }, [isOpen, discovered.length, searching, runDiscover]);
+
+  const loadTvDevices = useCallback(async () => {
+    setTvError(null);
+    try {
+      setTvDevices(await listTvDevices());
+    } catch (error) {
+      setTvDevices([]);
+      setTvError(error instanceof Error ? error.message : '获取 TV 设备失败');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen && getMediaInfo) {
+      void loadTvDevices();
+    }
+  }, [isOpen, getMediaInfo, loadTvDevices]);
+
+  const castToTvApp = useCallback(
+    async (device: TvRemoteDevice) => {
+      const info = getMediaInfo?.();
+      if (!info) {
+        setStatusText('当前页面没有可投屏的影片信息');
+        return;
+      }
+      setStatusText(`正在发送到 ${device.deviceName} ...`);
+      const result = await playMediaOnTv(device.deviceId, {
+        source: info.source,
+        id: info.id,
+        title: info.title,
+        episodeIndex: info.episodeIndex,
+        positionSec: info.positionSec,
+      });
+      if (result.ok) {
+        setStatusText(`已投屏到 ${device.deviceName},电视开始播放「${info.title}」`);
+        onCastingStart?.();
+      } else {
+        setStatusText(result.error || '投屏失败');
+      }
+    },
+    [getMediaInfo, onCastingStart]
+  );
 
   const runScan = useCallback(async () => {
     const prefix = scanPrefix.trim();
@@ -397,6 +453,58 @@ export default function DlnaCastPanel({
                 或在家庭网络内改用 http:// 访问本站。电视拉流(经本站代理)不受影响。
               </div>
             )}
+
+            {getMediaInfo ? (
+              <div className='pt-2 border-t border-gray-200 dark:border-gray-700'>
+                <div className='flex items-center justify-between mb-2'>
+                  <div className='text-xs font-medium text-green-600 dark:text-green-400'>
+                    MoonTV TV 端(推荐,跨网络可用)
+                  </div>
+                  <button
+                    type='button'
+                    onClick={() => void loadTvDevices()}
+                    className='flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400 hover:underline'
+                  >
+                    <RefreshCw size={12} /> 刷新
+                  </button>
+                </div>
+                {tvError && (
+                  <div className='rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 leading-relaxed'>
+                    {tvError}(需在服务器开启 TV 模式,且电视端打开 MoonTV TV App/页面)
+                  </div>
+                )}
+                {tvDevices.length > 0 ? (
+                  <div className='space-y-2'>
+                    {tvDevices.map((d) => (
+                      <button
+                        key={d.deviceId}
+                        type='button'
+                        disabled={castingBusy}
+                        onClick={() => void castToTvApp(d)}
+                        className='w-full flex items-center gap-2.5 rounded-lg border border-green-200 dark:border-green-800 px-3 py-2.5 hover:border-green-400 dark:hover:border-green-500 transition-colors text-left disabled:opacity-50'
+                      >
+                        <MonitorPlay size={18} className='text-green-500 shrink-0' />
+                        <span className='flex-1 min-w-0'>
+                          <span className='block truncate text-sm text-gray-800 dark:text-gray-200'>
+                            {d.deviceName}
+                          </span>
+                          <span className='block truncate text-[11px] text-gray-400 dark:text-gray-500'>
+                            {d.title || d.currentPath}
+                          </span>
+                        </span>
+                        <span className='text-xs text-green-600 dark:text-green-400 shrink-0'>投屏</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  !tvError && (
+                    <div className='text-[11px] text-gray-400 dark:text-gray-500 leading-relaxed'>
+                      暂无在线 TV 端。在电视上打开 MoonTV 的 /tv 页面或 TV App 并登录同一账号后,会自动出现在这里。
+                    </div>
+                  )
+                )}
+              </div>
+            ) : null}
 
             <div className='pt-2 border-t border-gray-200 dark:border-gray-700'>
               <div className='text-xs font-medium text-gray-500 dark:text-gray-400 mb-2'>

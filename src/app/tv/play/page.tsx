@@ -513,6 +513,8 @@ function TVPlayClient() {
   const title = searchParams.get('title');
   const fileName = searchParams.get('fileName');
   const initialIndex = Number(searchParams.get('index') || '0');
+  // 投屏/外部跳转指定的起始播放时间(秒);显式 index 时生效,优先于播放记录
+  const initialPosition = Number(searchParams.get('t') || '0');
 
   useEffect(() => {
     let alive = true;
@@ -549,7 +551,7 @@ function TVPlayClient() {
             })
             .catch(() => undefined);
         } else {
-          setStartTime(0);
+          setStartTime(initialPosition > 1 ? initialPosition : 0);
         }
         setEpisodeIndex(safeIndex);
       })
@@ -562,7 +564,7 @@ function TVPlayClient() {
     return () => {
       alive = false;
     };
-  }, [source, id, title, fileName, initialIndex]);
+  }, [source, id, title, fileName, initialIndex, initialPosition]);
 
   useEffect(() => {
     let alive = true;

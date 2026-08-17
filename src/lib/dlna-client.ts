@@ -299,6 +299,53 @@ function isMixedContentBlocked(): boolean {
 
 export { isMixedContentBlocked };
 
+// ---------- MoonTV TV App 投屏(私有协议,经服务器 Socket.IO 中转) ----------
+
+export interface TvRemoteDevice {
+  deviceId: string;
+  deviceName: string;
+  currentPath: string;
+  title?: string;
+  lastActiveAt: number;
+}
+
+export interface TvPlayMediaPayload {
+  source: string;
+  id: string;
+  title: string;
+  episodeIndex: number;
+  positionSec: number;
+  fileName?: string;
+}
+
+export async function listTvDevices(): Promise<TvRemoteDevice[]> {
+  const res = await fetchWithAuth('/api/tv-remote/devices');
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `获取 TV 设备失败 (${res.status})`);
+  }
+  const data = (await res.json()) as { devices?: TvRemoteDevice[] };
+  return data.devices || [];
+}
+
+export async function playMediaOnTv(
+  deviceId: string,
+  payload: TvPlayMediaPayload
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetchWithAuth('/api/tv-remote/play-media', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId, command: payload }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+    if (res.ok && data.success) return { ok: true };
+    return { ok: false, error: data.error || '电视端不在线或指令发送失败' };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '网络错误' };
+  }
+}
+
 // ---------- 投屏主流程 ----------
 
 /** 把直链包装为电视可拉流的地址(默认走服务器签名代理解决防盗链) */
