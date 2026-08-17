@@ -78,7 +78,7 @@ export function normalizeManualDeviceInput(input: string): DlnaDevice | null {
 }
 
 // 常见 DLNA 渲染器 control 端口与路径(社区经验值,涵盖 libupnp/miniupnp 默认与主流电视)
-export const CANDIDATE_PORTS = [49152, 8200, 1443, 9197, 52235, 13456, 46383, 80];
+export const CANDIDATE_PORTS = [49152, 49153, 8200, 9197, 52235, 13456, 46383, 8080];
 export const CANDIDATE_PATHS = [
   '/dev/render/ctl',
   '/control/',
@@ -87,16 +87,6 @@ export const CANDIDATE_PATHS = [
   '/AVTransport/control',
   '/ctl/AVTransport',
 ];
-
-function candidateControlUrls(ip: string): string[] {
-  const urls: string[] = [];
-  for (const port of CANDIDATE_PORTS) {
-    for (const path of CANDIDATE_PATHS) {
-      urls.push(`http://${ip}:${port}${path}`);
-    }
-  }
-  return urls.slice(0, 12);
-}
 
 // ---------- SOAP 直发(浏览器 → 电视) ----------
 
@@ -230,6 +220,85 @@ async function soapDirectAction(controlUrl: string, action: DlnaCommandAction, o
   }
 }
 
+// ---------- 浏览器侧局域网扫描 ----------
+// 云端部署时服务端 SSDP 永远扫不到家庭设备;改为浏览器直接探测:
+// 对网段内 IP × 常见 DLNA 端口发 no-cors fetch,TCP+HTTP 有响应即视为端口存活
+// (opaque 响应读不到内容,但 resolve/reject 足以判断端口开放)。
+
+export const PROBE_PORTS = [49152, 49153, 8200, 9197, 52235, 13456, 46383, 8080];
+
+export function isHttpsPage(): boolean {
+  return typeof window !== 'undefined' && window.location.protocol === 'https:';
+}
+
+async function probeEndpoint(url: string, timeoutMs = 1600): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    // 连接拒绝/DNS 失败/超时 → reject;端口开放(哪怕 404)→ resolve
+    await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface LanDeviceHit {
+  ip: string;
+  port: number;
+}
+
+export async function scanLanDevices(
+  prefix: string,
+  onProgress: (done: number, total: number, hits: LanDeviceHit[]) => void,
+  portList: number[] = PROBE_PORTS
+): Promise<LanDeviceHit[]> {
+  const hits: LanDeviceHit[] = [];
+  const targets: Array<{ ip: string; port: number }> = [];
+  for (let i = 1; i <= 254; i++) {
+    for (const port of portList) {
+      targets.push({ ip: `${prefix}${i}`, port });
+    }
+  }
+  const BATCH = 48;
+  let done = 0;
+  for (let i = 0; i < targets.length; i += BATCH) {
+    const batch = targets.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map(async (t) => ({ t, alive: await probeEndpoint(`http://${t.ip}:${t.port}/`) }))
+    );
+    for (const r of results) {
+      if (r.alive) {
+        hits.push(r.t);
+        onProgress(done, targets.length, [...hits]);
+      }
+    }
+    done += batch.length;
+    onProgress(done, targets.length, [...hits]);
+  }
+  // 同一 IP 多端口开放时,保留全部(投屏时逐个尝试)
+  return hits;
+}
+
+/** 把扫描命中包装成候选模式设备(仅对这些端口 × 常见路径盲发) */
+export function lanHitToDevice(hit: LanDeviceHit): DlnaDevice {
+  return {
+    id: `lan-${hit.ip}:${hit.port}`,
+    name: `局域网设备 ${hit.ip}:${hit.port}`,
+    controlUrl: `dlna-candidates://${hit.ip}?ports=${hit.port}`,
+    manual: true,
+  };
+}
+
+function isMixedContentBlocked(): boolean {
+  // HTTPS 页面向 http:// 设备发请求会被浏览器拦截,需用户在站点设置允许不安全内容
+  return isHttpsPage();
+}
+
+export { isMixedContentBlocked };
+
 // ---------- 投屏主流程 ----------
 
 /** 把直链包装为电视可拉流的地址(默认走服务器签名代理解决防盗链) */
@@ -252,8 +321,18 @@ export async function castToDevice(
 ): Promise<{ ok: boolean; resolvedControlUrl?: string; error?: string }> {
   // 候选模式:纯 IP 手动设备,逐个尝试常见 control 地址
   if (device.controlUrl.startsWith('dlna-candidates://')) {
-    const ip = device.controlUrl.replace('dlna-candidates://', '');
-    const candidates = candidateControlUrls(ip);
+    const rest = device.controlUrl.replace('dlna-candidates://', '');
+    const [ip, query] = rest.split('?');
+    const portsParam = query?.match(/ports=([\d,]+)/)?.[1];
+    const ports = portsParam
+      ? portsParam.split(',').map(Number).filter((p) => p > 0)
+      : CANDIDATE_PORTS;
+    const candidates: string[] = [];
+    for (const port of ports) {
+      for (const path of CANDIDATE_PATHS) {
+        candidates.push(`http://${ip}:${port}${path}`);
+      }
+    }
     const viaServer = await isServerMode(`http://${ip}:9197/x`);
     for (const candidate of candidates) {
       onCandidateTried?.(candidate);

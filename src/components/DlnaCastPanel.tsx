@@ -7,7 +7,7 @@
  * - 投屏中:播放/暂停/Seek±30s/停止;换集自动重投
  */
 
-import { Cast, Loader2, MonitorPlay, Pause, Play, Plus, RefreshCw, Square, Trash2, Tv } from 'lucide-react';
+import { Cast, Loader2, MonitorPlay, Pause, Play, Plus, RefreshCw, Search, Square, Trash2, Tv } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import Drawer from '@/components/Drawer';
@@ -16,12 +16,16 @@ import {
   discoverDevices,
   extractCastableUrl,
   formatSeconds,
+  isHttpsPage,
+  lanHitToDevice,
   loadManualDevices,
   normalizeManualDeviceInput,
   prepareCastUri,
   saveManualDevices,
+  scanLanDevices,
   sendCommand,
   type DlnaDevice,
+  type LanDeviceHit,
 } from '@/lib/dlna-client';
 
 export interface DlnaCastPanelProps {
@@ -66,6 +70,11 @@ export default function DlnaCastPanel({
   });
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const castingRef = useRef<CastingState | null>(null);
+  // 浏览器侧局域网扫描(云端部署时服务端 SSDP 扫不到家庭设备)
+  const [scanPrefix, setScanPrefix] = useState('192.168.1.');
+  const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
+  const [lanHits, setLanHits] = useState<LanDeviceHit[]>([]);
 
   useEffect(() => {
     castingRef.current = casting;
@@ -79,7 +88,7 @@ export default function DlnaCastPanel({
     setSearching(true);
     setSearchError(null);
     try {
-      const devices = await discoverDevices(4000);
+      const devices = await discoverDevices(3000);
       setDiscovered(devices);
       if (devices.length === 0) {
         setSearchError('未发现设备。若 MoonTV 部署在云端,服务端无法扫描家庭网络,请在下方手动添加电视 IP');
@@ -96,6 +105,32 @@ export default function DlnaCastPanel({
       void runDiscover();
     }
   }, [isOpen, discovered.length, searching, runDiscover]);
+
+  const runScan = useCallback(async () => {
+    const prefix = scanPrefix.trim();
+    if (!/^(\d{1,3}\.){3}$/.test(prefix)) {
+      setSearchError('网段格式应为 192.168.1. 这样的前缀');
+      return;
+    }
+    setScanning(true);
+    setLanHits([]);
+    setSearchError(null);
+    try {
+      const hits = await scanLanDevices(prefix, (done, total, found) => {
+        setScanProgress({ done, total });
+        setLanHits(found);
+      });
+      setLanHits(hits);
+      if (hits.length === 0) {
+        setSearchError('扫描完成,未发现开放端口的设备。请确认电视/盒子与当前设备在同一网络');
+      }
+    } catch {
+      setSearchError('扫描失败,浏览器可能拦截了对局域网地址的请求(见下方 HTTPS 提示)');
+    } finally {
+      setScanning(false);
+      setScanProgress(null);
+    }
+  }, [scanPrefix]);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -354,6 +389,50 @@ export default function DlnaCastPanel({
                 {searchError}
               </div>
             )}
+
+            {isHttpsPage() && (
+              <div className='rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 leading-relaxed'>
+                当前通过 HTTPS 访问,浏览器默认会拦截发往局域网设备(HTTP)的投屏指令。
+                Chrome/Edge:点击地址栏锁图标 → 网站设置 → 「不安全内容」改为「允许」后刷新页面;
+                或在家庭网络内改用 http:// 访问本站。电视拉流(经本站代理)不受影响。
+              </div>
+            )}
+
+            <div className='pt-2 border-t border-gray-200 dark:border-gray-700'>
+              <div className='text-xs font-medium text-gray-500 dark:text-gray-400 mb-2'>
+                局域网扫描(浏览器直接探测,适用于云端部署)
+              </div>
+              <div className='flex gap-2'>
+                <input
+                  value={scanPrefix}
+                  onChange={(e) => setScanPrefix(e.target.value)}
+                  placeholder='192.168.1.'
+                  className='flex-1 min-w-0 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-800 dark:text-gray-200 placeholder:text-gray-400 focus:outline-none focus:ring-1 focus:ring-sky-500'
+                />
+                <button
+                  type='button'
+                  onClick={() => void runScan()}
+                  disabled={scanning}
+                  className='flex items-center gap-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white px-3 text-sm transition-colors whitespace-nowrap'
+                >
+                  {scanning ? <RefreshCw size={14} className='animate-spin' /> : <Search size={14} />}
+                  {scanning ? '扫描中' : '扫描'}
+                </button>
+              </div>
+              {scanProgress && (
+                <div className='mt-2 text-[11px] text-gray-400 dark:text-gray-500'>
+                  {scanProgress.done}/{scanProgress.total} 个地址已探测,发现 {lanHits.length} 个开放端口...
+                </div>
+              )}
+              {lanHits.length > 0 && !scanning && (
+                <div className='mt-2 space-y-2'>
+                  <div className='text-[11px] text-gray-400 dark:text-gray-500'>
+                    发现开放端口(点击投屏,电视响应后即成功):
+                  </div>
+                  {lanHits.map((h) => renderDeviceItem(lanHitToDevice(h), false))}
+                </div>
+              )}
+            </div>
 
             {manualDevices.length > 0 && (
               <div className='space-y-2 pt-1'>

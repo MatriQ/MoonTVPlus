@@ -45,7 +45,12 @@ export async function ssdpSearch(timeoutMs = 4000): Promise<SsdpDeviceAnnounceme
   ];
 
   return new Promise<SsdpDeviceAnnouncement[]>((resolve) => {
+    let settled = false;
     const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(bindTimer);
       try {
         socket.close();
       } catch {
@@ -54,11 +59,10 @@ export async function ssdpSearch(timeoutMs = 4000): Promise<SsdpDeviceAnnounceme
       resolve(Array.from(found.values()));
     };
     const timer = setTimeout(finish, timeoutMs);
+    // Docker bridge 等环境下 bind 回调可能不触发,提前结束避免请求挂满超时
+    const bindTimer = setTimeout(finish, 1200);
     // 兜底:socket 异常时提前结束,避免整个请求挂死
-    socket.on('error', () => {
-      clearTimeout(timer);
-      finish();
-    });
+    socket.on('error', finish);
     socket.on('message', (msg) => {
       const text = msg.toString('utf8');
       const location = matchHttpHeader(text, 'LOCATION');
@@ -79,6 +83,7 @@ export async function ssdpSearch(timeoutMs = 4000): Promise<SsdpDeviceAnnounceme
       }
     });
     socket.bind(() => {
+      clearTimeout(bindTimer);
       try {
         socket.addMembership(SSDP_ADDR);
       } catch {
